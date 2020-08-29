@@ -39,16 +39,12 @@ import org.jasig.ssp.util.sort.PagingWrapper;
 import org.jasig.ssp.util.sort.SortingAndPaging;
 import org.jasig.ssp.web.api.validation.ValidationException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 @Transactional
@@ -56,14 +52,11 @@ public class JournalEntryServiceImpl
 		extends AbstractRestrictedPersonAssocAuditableService<JournalEntry>
 		implements JournalEntryService {
 
-	@Autowired
-	private transient JournalEntryDao dao;
+	private final transient JournalEntryDao dao;
 
-	@Autowired
-	private transient PersonProgramStatusService personProgramStatusService;
-	
-	@Autowired
-	private transient PersonDao personDao;
+	private final transient PersonProgramStatusService personProgramStatusService;
+
+	private final transient PersonDao personDao;
 
 	@Override
 	protected JournalEntryDao getDao() {
@@ -74,7 +67,7 @@ public class JournalEntryServiceImpl
 	public JournalEntry create(final JournalEntry obj)
 			throws ObjectNotFoundException, ValidationException {
 		final JournalEntry journalEntry = getDao().save(obj);
-		checkForTransition(journalEntry);
+		transition(journalEntry);
 		return journalEntry;
 	}
 
@@ -82,25 +75,28 @@ public class JournalEntryServiceImpl
 	public JournalEntry save(final JournalEntry obj)
 			throws ObjectNotFoundException, ValidationException {
 		final JournalEntry journalEntry = getDao().save(obj);
-		checkForTransition(journalEntry);
+		transition(journalEntry);
 		return journalEntry;
 	}
 
-	private void checkForTransition(final JournalEntry journalEntry)
-			throws ObjectNotFoundException, ValidationException {
-		// search for a JournalStep that indicates a transition
-		for (final JournalEntryDetail detail : journalEntry
-				.getJournalEntryDetails()) {
-			if (detail.getJournalStepJournalStepDetail().getJournalStep()
-					.isUsedForTransition()) {
-				// is used for transition, so attempt to set program status
-				personProgramStatusService.setTransitionForStudent(journalEntry
-						.getPerson());
+	@Autowired
+	public JournalEntryServiceImpl(JournalEntryDao dao, PersonProgramStatusService personProgramStatusService, PersonDao personDao) {
+		this.dao = dao;
+		this.personProgramStatusService = personProgramStatusService;
+		this.personDao = personDao;
+	}
 
-				// exit early because no need to loop through others
-				return;
-			}
+	@Async
+	void transition(final JournalEntry journalEntry) throws ValidationException, ObjectNotFoundException {
+		for (JournalEntryDetail journalEntryDetail : getDetailForTransition(journalEntry.getJournalEntryDetails())) {
+			personProgramStatusService.setTransitionForStudent(journalEntry.getPerson());
 		}
+	}
+
+	private Set<JournalEntryDetail> getDetailForTransition(Set<JournalEntryDetail> details) {
+		return details.stream().
+				filter(detail -> detail.getJournalStepJournalStepDetail().getJournalStep().isUsedForTransition())
+				.collect(Collectors.toSet());
 	}
 	
 	@Override
@@ -162,28 +158,17 @@ public class JournalEntryServiceImpl
  	}
  		 
 	private static void sortByStudentName(List<JournalCaseNotesStudentReportTO> toSort) {
-		Collections.sort(toSort,  new Comparator<JournalCaseNotesStudentReportTO>() {
-	        public int compare(JournalCaseNotesStudentReportTO p1, JournalCaseNotesStudentReportTO p2) {
-	        	
-	        	int value = p1.getLastName().compareToIgnoreCase(
-	     	                    p2.getLastName());
-	        	if(value != 0)
-	        		return value;
-	        	
-	        	value = p1.getFirstName().compareToIgnoreCase(
- 	                    p2.getFirstName());
-		       if(value != 0)
-        		 return value;
-		       if(p1.getMiddleName() == null && p2.getMiddleName() == null)
-		    	   return 0;
-		       if(p1.getMiddleName() == null)
-		    	   return -1;
-		       if(p2.getMiddleName() == null)
-		    	   return 1;
-		       return p1.getMiddleName().compareToIgnoreCase(
-	                    p2.getMiddleName());
-	        }
-	    });
+		Comparator<JournalCaseNotesStudentReportTO> byFirstName =
+				(JournalCaseNotesStudentReportTO o1, JournalCaseNotesStudentReportTO o2)->o1.getFirstName().compareToIgnoreCase(o2.getFirstName());
+
+		Comparator<JournalCaseNotesStudentReportTO> byMiddleName =
+				(JournalCaseNotesStudentReportTO o1, JournalCaseNotesStudentReportTO o2)->o1.getMiddleName().compareToIgnoreCase(o2.getMiddleName());
+
+		Comparator<JournalCaseNotesStudentReportTO> byLastName =
+				(JournalCaseNotesStudentReportTO o1, JournalCaseNotesStudentReportTO o2)->o1.getLastName().compareToIgnoreCase(o2.getLastName());
+
+		toSort.sort(Comparator.nullsFirst(byFirstName).thenComparing(byMiddleName).thenComparing(byLastName));
+
 	}
 
 }
